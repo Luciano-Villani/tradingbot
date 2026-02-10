@@ -1,0 +1,29 @@
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.env
+*.log
+*.csv
+
+# Datos (logs grandes)
+data/logs/*
+!data/logs/.gitkeep
+
+# Configuración sensible
+config/.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+

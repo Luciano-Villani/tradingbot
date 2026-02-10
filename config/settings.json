@@ -1,0 +1,24 @@
+
+{
+  "strategy": {
+    "symbol": "BTC/USDT",
+    "min_funding_threshold": 0.0005,
+    "extreme_funding_threshold": 0.001,
+    "max_position_size_usd": 100,
+    "leverage": 2,
+    "check_interval_seconds": 30
+  },
+  "risk": {
+    "max_daily_loss_usd": 50,
+    "max_positions": 1,
+    "max_errors_per_day": 10,
+    "auto_stop_on_errors": true
+  },
+  "logging": {
+    "level": "INFO",
+    "console_output": true,
+    "file_rotation_mb": 10,
+    "retention_days": 7
+  }
+}
+
