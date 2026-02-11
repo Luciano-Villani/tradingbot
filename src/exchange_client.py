@@ -190,13 +190,27 @@ class BinanceClient:
             return None
     
     def _round_amount(self, symbol: str, amount: float) -> float:
-        """Redondea según precisión del mercado"""
-        if not self.markets or symbol not in self.markets:
-            return round(amount, 3)
-        
-        precision = self.markets[symbol].get('precision', {}).get('amount', 3)
-        quanto = Decimal(10) ** -precision
-        return float(Decimal(str(amount)).quantize(quanto, rounding=ROUND_DOWN))
+        """Redondea según precisión del mercado de forma ultra-estricta"""
+        try:
+            # Quitamos la barra si viene con ella para buscar en el diccionario
+            symbol_key = symbol.replace('/', '')
+            
+            if not self.markets or symbol_key not in self.markets:
+                return round(amount, 2)
+            
+            precision = self.markets[symbol_key].get('precision', {}).get('amount', 3)
+            
+            # 1. Convertimos a string con la precisión exacta para evitar basura de coma flotante
+            # 2. Usamos Decimal para truncar hacia abajo (ROUND_DOWN) y evitar exceder el balance
+            amount_str = f"{amount:.10f}" # Tomamos suficientes decimales iniciales
+            step = Decimal(10) ** -precision
+            rounded = Decimal(amount_str).quantize(step, rounding=ROUND_DOWN)
+            
+            return float(rounded)
+            
+        except Exception as e:
+            logger.error(f"⚠️ Error en redondeo para {symbol}: {e}")
+            return round(amount, 2)
     
     def close_position(self, symbol: str = 'BTC/USDT') -> bool:
         """Cerrar posición"""
