@@ -5,7 +5,7 @@ from loguru import logger
 from decimal import Decimal, ROUND_DOWN
 
 class BinanceClient:
-    """Cliente Binance Futures - Demo usa endpoint de producción con keys de Demo"""
+    """Cliente Binance Futures con endpoint Demo correcto"""
     
     def __init__(self, paper_mode: bool = True):
         self.paper_mode = paper_mode
@@ -15,51 +15,69 @@ class BinanceClient:
     def _init_exchange(self) -> ccxt.binance:
         """Inicializa conexión"""
         
-        # IMPORTANTE: Las keys de Demo funcionan en el endpoint de producción
-        # No es necesario cambiar URLs, solo usar las keys correctas
-        
         config = {
             'apiKey': os.getenv('BINANCE_API_KEY'),
             'secret': os.getenv('BINANCE_SECRET'),
             'enableRateLimit': True,
             'options': {
                 'defaultType': 'future',
-                'adjustForTimeDifference': True,
             },
             'timeout': 30000,
         }
         
-        if self.paper_mode:
-            logger.info("📝 Conectando a Binance DEMO (usa endpoint producción con keys de Demo)")
-        else:
-            logger.warning("💰 Conectando a Binance REAL")
+        exchange = ccxt.binance(config)
         
-        return ccxt.binance(config)
+        if self.paper_mode:
+            # FORZAR completamente las URLs a Futures Demo
+            exchange.urls = {
+                'logo': 'https://binance.com',
+                'api': {
+                    'public': 'https://demo-fapi.binance.com/fapi/v1',
+                    'private': 'https://demo-fapi.binance.com/fapi/v1',
+                    'fapiPublic': 'https://demo-fapi.binance.com/fapi/v1',
+                    'fapiPrivate': 'https://demo-fapi.binance.com/fapi/v1',
+                    'fapiPublicV2': 'https://demo-fapi.binance.com/fapi/v2',
+                    'fapiPrivateV2': 'https://demo-fapi.binance.com/fapi/v2',
+                },
+                'www': 'https://www.binance.com',
+                'doc': 'https://binance-docs.github.io/apidocs/spot/en',
+            }
+            logger.info("📝 Futures DEMO: https://demo-fapi.binance.com")
+        else:
+            logger.warning("💰 Futures REAL: https://fapi.binance.com")
+        
+        return exchange
     
     def load_markets(self) -> bool:
-        """Carga mercados"""
+        """Carga mercados sin spot API"""
         try:
-            # Sincronizar tiempo primero
             logger.info("⏱️ Sincronizando tiempo...")
-            self.exchange.load_time_difference()
             
-            # Cargar mercados
-            self.markets = self.exchange.load_markets()
+            # Sincronizar tiempo manualmente en endpoint correcto
+            try:
+                response = self.exchange.fetch2('time', 'fapiPublic')
+                server_time = response['serverTime']
+                local_time = self.exchange.milliseconds()
+                self.exchange.options['timeDifference'] = server_time - local_time
+                logger.info(f"✅ Tiempo sincronizado: diff={self.exchange.options['timeDifference']}ms")
+            except Exception as e:
+                logger.warning(f"⚠️ No se pudo sincronizar tiempo: {e}")
+            
+            # Cargar mercados de futures específicamente
+            logger.info("📊 Cargando mercados futures...")
+            self.markets = self.exchange.fetch_markets(params={'type': 'future'})
             logger.info(f"✅ {len(self.markets)} mercados cargados")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Error cargando mercados: {e}")
-            # Si falla por keys, mostrar mensaje útil
-            if "Invalid Api-Key" in str(e):
-                logger.error("🔑 Las API keys no son válidas para este modo")
-                logger.error("   Si usás Demo, asegurate de generar las keys DENTRO del modo Demo de Binance")
+            logger.error(f"❌ Error: {e}")
             return False
     
     def fetch_balance(self) -> Optional[Dict]:
-        """Balance USDT"""
+        """Balance de futures"""
         try:
-            balance = self.exchange.fetch_balance()
+            # Usar endpoint de futures explícitamente
+            balance = self.exchange.fetch_balance(params={'type': 'future'})
             usdt = balance.get('USDT', {})
             return {
                 'free': float(usdt.get('free', 0)),
@@ -71,34 +89,27 @@ class BinanceClient:
             return None
     
     def fetch_funding_rate(self, symbol: str = 'BTC/USDT') -> Optional[Dict]:
-        """Obtiene funding rate actual"""
+        """Funding rate"""
         try:
             funding = self.exchange.fetch_funding_rate(symbol)
             return {
                 'symbol': symbol,
                 'fundingRate': float(funding['fundingRate']),
-                'fundingTime': funding['fundingTimestamp'],
                 'markPrice': float(funding['markPrice']),
-                'indexPrice': float(funding.get('indexPrice', 0)),
                 'nextFundingTime': funding['nextFundingTimestamp'],
-                'timestamp': funding['timestamp']
             }
         except Exception as e:
             logger.error(f"❌ Error funding: {e}")
             return None
     
     def fetch_ticker(self, symbol: str = 'BTC/USDT') -> Optional[Dict]:
-        """Ticker actual"""
+        """Ticker"""
         try:
             ticker = self.exchange.fetch_ticker(symbol)
             return {
-                'symbol': symbol,
                 'last': float(ticker['last']),
                 'bid': float(ticker['bid']),
                 'ask': float(ticker['ask']),
-                'spread': float(ticker['ask'] - ticker['bid']),
-                'volume': float(ticker['quoteVolume']),
-                'timestamp': ticker['timestamp']
             }
         except Exception as e:
             logger.error(f"❌ Error ticker: {e}")
@@ -116,59 +127,47 @@ class BinanceClient:
                 side=side,
                 amount=amount,
                 price=price,
-                params=params or {}
+                params={'type': 'future', **(params or {})}
             )
-            logger.info(f"✅ Orden: {order['id']} | {side} {amount} @ {price}")
+            logger.info(f"✅ Orden: {order['id']}")
             return order
-            
         except Exception as e:
             logger.error(f"❌ Error orden: {e}")
             return None
     
     def _round_amount(self, symbol: str, amount: float) -> float:
-        """Redondea a precisión del mercado"""
         if not self.markets or symbol not in self.markets:
             return amount
         precision = self.markets[symbol].get('precision', {}).get('amount', 8)
         quanto = Decimal(10) ** -precision
-        rounded = Decimal(str(amount)).quantize(quanto, rounding=ROUND_DOWN)
-        return float(rounded)
+        return float(Decimal(str(amount)).quantize(quanto, rounding=ROUND_DOWN))
     
     def close_position(self, symbol: str = 'BTC/USDT') -> bool:
-        """Cierra posición"""
         try:
-            positions = self.exchange.fetch_positions([symbol])
+            positions = self.exchange.fetch_positions([symbol], params={'type': 'future'})
             for pos in positions:
                 contracts = float(pos.get('contracts', 0))
                 if contracts != 0:
                     side = 'sell' if pos['side'] == 'long' else 'buy'
-                    self.exchange.create_market_order(symbol, side, abs(contracts))
-                    logger.info(f"✅ Cerrado: {pos['side']} {contracts}")
+                    self.exchange.create_market_order(symbol, side, abs(contracts), params={'type': 'future'})
                     return True
-            
-            logger.info("📭 No hay posición")
             return False
-            
         except Exception as e:
-            logger.error(f"❌ Error cerrando: {e}")
+            logger.error(f"❌ Error: {e}")
             return False
     
     def get_position(self, symbol: str = 'BTC/USDT') -> Optional[Dict]:
-        """Obtiene posición actual"""
         try:
-            positions = self.exchange.fetch_positions([symbol])
+            positions = self.exchange.fetch_positions([symbol], params={'type': 'future'})
             for pos in positions:
                 if float(pos.get('contracts', 0)) != 0:
                     return {
                         'side': pos['side'],
                         'size': float(pos['contracts']),
-                        'entryPrice': float(pos['entryPrice']),
-                        'markPrice': float(pos['markPrice']),
-                        'pnl': float(pos['unrealizedPnl']),
-                        'leverage': float(pos['leverage'])
+                        'pnl': float(pos.get('unrealizedPnl', 0)),
                     }
             return None
         except Exception as e:
-            logger.error(f"❌ Error posición: {e}")
+            logger.error(f"❌ Error: {e}")
             return None
         
