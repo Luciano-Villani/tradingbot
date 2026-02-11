@@ -49,7 +49,7 @@ class BinanceClient:
         return exchange
     
     def load_markets(self) -> bool:
-        """Carga mercados usando solo fapi"""
+        """Carga mercados usando solo fapi y extrae filtros de tick y step"""
         try:
             response = self.exchange.fetch2('exchangeInfo', 'fapiPublic')
             
@@ -57,22 +57,36 @@ class BinanceClient:
             for symbol_data in response.get('symbols', []):
                 if symbol_data.get('status') == 'TRADING':
                     symbol = symbol_data['symbol']
+                    
+                    # Extraemos los filtros necesarios para el redondeo matemático
+                    filters = {f['filterType']: f for f in symbol_data.get('filters', [])}
+                    
+                    # El tickSize es el incremento mínimo de precio (ej. 0.10, 0.01)
+                    price_filter = filters.get('PRICE_FILTER', {})
+                    tick_size = price_filter.get('tickSize', '0.01')
+                    
+                    # El stepSize es el incremento mínimo de cantidad (ej. 0.001, 1.0)
+                    lot_filter = filters.get('LOT_SIZE', {})
+                    step_size = lot_filter.get('stepSize', '0.01')
+                    
                     markets[symbol] = {
                         'symbol': symbol,
                         'base': symbol_data['baseAsset'],
                         'quote': symbol_data['quoteAsset'],
                         'precision': {
-                            'amount': symbol_data.get('quantityPrecision', 8),
-                            'price': symbol_data.get('pricePrecision', 8),
-                        }
+                            'amount': int(symbol_data.get('quantityPrecision', 3)),
+                            'price': int(symbol_data.get('pricePrecision', 2)),
+                        },
+                        'tickSize': float(tick_size),
+                        'stepSize': float(step_size)
                     }
             
             self.markets = markets
-            logger.info(f"✅ {len(markets)} mercados cargados")
+            logger.info(f"✅ {len(markets)} mercados cargados con filtros de precisión")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Error: {e}")
+            logger.error(f"❌ Error cargando mercados: {e}")
             return False
     
     def fetch_balance(self) -> Optional[Dict]:
@@ -201,32 +215,38 @@ class BinanceClient:
             logger.error(f"❌ Error orden en {symbol}: {e}")
             return None
 
-    def _round_amount(self, symbol: str, amount: float) -> float:
-        """Redondeo de cantidad con manejo de tipos robusto"""
-        try:
-            symbol_key = symbol.replace('/', '')
-            if not self.markets or symbol_key not in self.markets:
-                return round(float(amount), 2)
-            
-            # Forzamos entero para evitar el error 'str'
-            precision = int(self.markets[symbol_key].get('precision', {}).get('amount', 3))
-            return float(f"{{:.{precision}f}}".format(amount))
-        except Exception as e:
-            logger.error(f"Error redondeo cantidad {symbol}: {e}")
-            return round(float(amount), 2)
-
     def _round_price(self, symbol: str, price: float) -> float:
-        """Redondeo de precio (necesario para evitar error -1111 en LIMIT)"""
+        """Redondea el precio al múltiplo de tickSize más cercano"""
         try:
             symbol_key = symbol.replace('/', '')
             if not self.markets or symbol_key not in self.markets:
                 return round(float(price), 2)
             
-            precision = int(self.markets[symbol_key].get('precision', {}).get('price', 2))
-            return float(f"{{:.{precision}f}}".format(price))
+            tick_size = self.markets[symbol_key].get('tickSize', 0.01)
+            precision = self.markets[symbol_key]['precision']['price']
+            
+            # Matemática de tick: (Precio // tickSize) * tickSize
+            rounded = (float(price) // tick_size) * tick_size
+            return float(f"{{:.{precision}f}}".format(rounded))
         except Exception as e:
             logger.error(f"Error redondeo precio {symbol}: {e}")
-            return round(float(price), 2)
+            return float(price)
+
+    def _round_amount(self, symbol: str, amount: float) -> float:
+        """Redondea la cantidad al múltiplo de stepSize más cercano"""
+        try:
+            symbol_key = symbol.replace('/', '')
+            if not self.markets or symbol_key not in self.markets:
+                return round(float(amount), 3)
+            
+            step_size = self.markets[symbol_key].get('stepSize', 0.01)
+            precision = self.markets[symbol_key]['precision']['amount']
+            
+            rounded = (float(amount) // step_size) * step_size
+            return float(f"{{:.{precision}f}}".format(rounded))
+        except Exception as e:
+            logger.error(f"Error redondeo cantidad {symbol}: {e}")
+            return float(amount)
     
     def close_position(self, symbol: str = 'BTC/USDT') -> bool:
         """Cerrar posición"""
