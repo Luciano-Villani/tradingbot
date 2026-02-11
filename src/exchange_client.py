@@ -13,7 +13,7 @@ class BinanceClient:
         self.markets = None
         
     def _init_exchange(self) -> ccxt.binance:
-        """Inicializa conexión"""
+        """Inicializa conexión con endpoint Demo correcto"""
         config = {
             'apiKey': os.getenv('BINANCE_API_KEY'),
             'secret': os.getenv('BINANCE_SECRET'),
@@ -26,9 +26,19 @@ class BinanceClient:
         }
         
         if self.paper_mode:
-            # DEMO TRADING (nuevo sistema de Binance)
-            config['options']['sandboxMode'] = True
+            # DEMO TRADING: endpoint oficial de Binance
+            config['urls'] = {
+                'api': {
+                    'public': 'https://demo-fapi.binance.com/fapi/v1',
+                    'private': 'https://demo-fapi.binance.com/fapi/v1',
+                    'fapiPublic': 'https://demo-fapi.binance.com/fapi/v1',
+                    'fapiPrivate': 'https://demo-fapi.binance.com/fapi/v1',
+                    'fapiPublicV2': 'https://demo-fapi.binance.com/fapi/v2',
+                    'fapiPrivateV2': 'https://demo-fapi.binance.com/fapi/v2',
+                }
+            }
             logger.info("📝 Conectando a Binance DEMO TRADING")
+            logger.info("🔗 Endpoint: https://demo-fapi.binance.com")
         else:
             logger.warning("💰 Conectando a Binance REAL")
         
