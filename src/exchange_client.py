@@ -5,7 +5,7 @@ from loguru import logger
 from decimal import Decimal, ROUND_DOWN
 
 class BinanceClient:
-    """Cliente Binance Futures con Demo Trading y sincronización de tiempo"""
+    """Cliente Binance Futures - Demo usa endpoint de producción con keys de Demo"""
     
     def __init__(self, paper_mode: bool = True):
         self.paper_mode = paper_mode
@@ -13,7 +13,11 @@ class BinanceClient:
         self.markets = None
         
     def _init_exchange(self) -> ccxt.binance:
-        """Inicializa conexión con endpoint Demo correcto"""
+        """Inicializa conexión"""
+        
+        # IMPORTANTE: Las keys de Demo funcionan en el endpoint de producción
+        # No es necesario cambiar URLs, solo usar las keys correctas
+        
         config = {
             'apiKey': os.getenv('BINANCE_API_KEY'),
             'secret': os.getenv('BINANCE_SECRET'),
@@ -26,28 +30,16 @@ class BinanceClient:
         }
         
         if self.paper_mode:
-            # DEMO TRADING: endpoint oficial de Binance
-            config['urls'] = {
-                'api': {
-                    'public': 'https://demo-fapi.binance.com/fapi/v1',
-                    'private': 'https://demo-fapi.binance.com/fapi/v1',
-                    'fapiPublic': 'https://demo-fapi.binance.com/fapi/v1',
-                    'fapiPrivate': 'https://demo-fapi.binance.com/fapi/v1',
-                    'fapiPublicV2': 'https://demo-fapi.binance.com/fapi/v2',
-                    'fapiPrivateV2': 'https://demo-fapi.binance.com/fapi/v2',
-                }
-            }
-            logger.info("📝 Conectando a Binance DEMO TRADING")
-            logger.info("🔗 Endpoint: https://demo-fapi.binance.com")
+            logger.info("📝 Conectando a Binance DEMO (usa endpoint producción con keys de Demo)")
         else:
             logger.warning("💰 Conectando a Binance REAL")
         
         return ccxt.binance(config)
     
     def load_markets(self) -> bool:
-        """Carga mercados con sincronización previa"""
+        """Carga mercados"""
         try:
-            # Sincronizar tiempo primero (evita error -1021)
+            # Sincronizar tiempo primero
             logger.info("⏱️ Sincronizando tiempo...")
             self.exchange.load_time_difference()
             
@@ -58,7 +50,25 @@ class BinanceClient:
             
         except Exception as e:
             logger.error(f"❌ Error cargando mercados: {e}")
+            # Si falla por keys, mostrar mensaje útil
+            if "Invalid Api-Key" in str(e):
+                logger.error("🔑 Las API keys no son válidas para este modo")
+                logger.error("   Si usás Demo, asegurate de generar las keys DENTRO del modo Demo de Binance")
             return False
+    
+    def fetch_balance(self) -> Optional[Dict]:
+        """Balance USDT"""
+        try:
+            balance = self.exchange.fetch_balance()
+            usdt = balance.get('USDT', {})
+            return {
+                'free': float(usdt.get('free', 0)),
+                'used': float(usdt.get('used', 0)),
+                'total': float(usdt.get('total', 0))
+            }
+        except Exception as e:
+            logger.error(f"❌ Error balance: {e}")
+            return None
     
     def fetch_funding_rate(self, symbol: str = 'BTC/USDT') -> Optional[Dict]:
         """Obtiene funding rate actual"""
@@ -94,41 +104,10 @@ class BinanceClient:
             logger.error(f"❌ Error ticker: {e}")
             return None
     
-    def fetch_balance(self) -> Optional[Dict]:
-        """Balance USDT"""
-        try:
-            # Paper sin API keys válidas = balance simulado
-            if self.paper_mode:
-                api_key = os.getenv('BINANCE_API_KEY', '')
-                if not api_key or api_key == 'tu_api_key_aqui':
-                    logger.info("📝 Balance simulado: $10,000 USDT")
-                    return {'free': 10000.0, 'used': 0.0, 'total': 10000.0}
-            
-            # Llamada real
-            balance = self.exchange.fetch_balance()
-            usdt = balance.get('USDT', {})
-            return {
-                'free': float(usdt.get('free', 0)),
-                'used': float(usdt.get('used', 0)),
-                'total': float(usdt.get('total', 0))
-            }
-            
-        except Exception as e:
-            logger.error(f"❌ Error balance: {e}")
-            if self.paper_mode:
-                return {'free': 10000.0, 'used': 0.0, 'total': 10000.0}
-            return None
-    
     def create_order(self, symbol: str, side: str, amount: float, 
                      price: float = None, order_type: str = 'limit',
                      params: Dict = None) -> Optional[Dict]:
         """Crear orden"""
-        if self.paper_mode:
-            # Verificar si tenemos API keys válidas
-            api_key = os.getenv('BINANCE_API_KEY', '')
-            if not api_key or api_key == 'tu_api_key_aqui':
-                return self._paper_order(symbol, side, amount, price, order_type)
-        
         try:
             amount = self._round_amount(symbol, amount)
             order = self.exchange.create_order(
@@ -146,23 +125,6 @@ class BinanceClient:
             logger.error(f"❌ Error orden: {e}")
             return None
     
-    def _paper_order(self, symbol: str, side: str, amount: float,
-                     price: float, order_type: str) -> Dict:
-        """Orden simulada para paper sin API"""
-        order_id = f"paper_{int(__import__('time').time() * 1000)}"
-        logger.info(f"📝 [PAPER] {side}: {amount} {symbol} @ {price}")
-        return {
-            'id': order_id,
-            'status': 'filled',  # Simular ejecución inmediata
-            'symbol': symbol,
-            'side': side,
-            'amount': amount,
-            'price': price,
-            'type': order_type,
-            'filled': amount,
-            'remaining': 0
-        }
-    
     def _round_amount(self, symbol: str, amount: float) -> float:
         """Redondea a precisión del mercado"""
         if not self.markets or symbol not in self.markets:
@@ -175,13 +137,6 @@ class BinanceClient:
     def close_position(self, symbol: str = 'BTC/USDT') -> bool:
         """Cierra posición"""
         try:
-            # Paper sin API = simular cierre
-            if self.paper_mode:
-                api_key = os.getenv('BINANCE_API_KEY', '')
-                if not api_key or api_key == 'tu_api_key_aqui':
-                    logger.info("📝 [PAPER] Posición cerrada (simulado)")
-                    return True
-            
             positions = self.exchange.fetch_positions([symbol])
             for pos in positions:
                 contracts = float(pos.get('contracts', 0))
@@ -201,12 +156,6 @@ class BinanceClient:
     def get_position(self, symbol: str = 'BTC/USDT') -> Optional[Dict]:
         """Obtiene posición actual"""
         try:
-            # Paper sin API = simular sin posición
-            if self.paper_mode:
-                api_key = os.getenv('BINANCE_API_KEY', '')
-                if not api_key or api_key == 'tu_api_key_aqui':
-                    return None
-            
             positions = self.exchange.fetch_positions([symbol])
             for pos in positions:
                 if float(pos.get('contracts', 0)) != 0:
