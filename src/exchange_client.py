@@ -15,18 +15,27 @@ class BinanceClient:
             'apiKey': os.getenv('BINANCE_API_KEY'),
             'secret': os.getenv('BINANCE_SECRET'),
             'enableRateLimit': True,
-            'options': {'defaultType': 'future'}
+            'options': {
+                'defaultType': 'future'
+            }
         }
+        
         exchange = ccxt.binance(config)
+        
         if self.paper_mode:
-            exchange.set_sandbox_mode(True)
-            logger.info("🧪 MODO TESTNET ACTIVADO")
+            # Nueva configuración para Demo Trading (reemplaza a Sandbox/Testnet)
+            exchange.urls['api']['fapiPublic'] = 'https://demo-fapi.binance.com/fapi/v1'
+            exchange.urls['api']['fapiPrivate'] = 'https://demo-fapi.binance.com/fapi/v1'
+            logger.info("🧪 MODO DEMO TRADING ACTIVADO (Nueva URL)")
+        else:
+            logger.warning("💰 MODO REAL ACTIVADO")
+            
         return exchange
     
     def load_markets(self) -> bool:
-        """Carga mercados y sus precisiones"""
         try:
-            self.markets = self.exchange.load_markets()
+            # Forzamos la carga desde la API
+            self.markets = self.exchange.load_markets(True)
             logger.info(f"✅ {len(self.markets)} mercados cargados")
             return True
         except Exception as e:
@@ -35,33 +44,38 @@ class BinanceClient:
     
     def fetch_balance(self) -> Optional[Dict]:
         try:
+            # Usamos el método unificado de ccxt
             balance = self.exchange.fetch_balance()
+            
+            # Binance Futures guarda el balance en 'total' dentro de cada asset
             res = {
-                'USDT': {'free': balance.get('USDT', {}).get('free', 0), 'total': balance.get('USDT', {}).get('total', 0)},
-                'USDC': {'free': balance.get('USDC', {}).get('free', 0), 'total': balance.get('USDC', {}).get('total', 0)},
-                'BTC': {'free': balance.get('BTC', {}).get('free', 0), 'total': balance.get('BTC', {}).get('total', 0)},
+                'USDT': {'free': balance.get('USDT', {}).get('free', 0.0), 'total': balance.get('USDT', {}).get('total', 0.0)},
+                'USDC': {'free': balance.get('USDC', {}).get('free', 0.0), 'total': balance.get('USDC', {}).get('total', 0.0)},
+                'BTC': {'free': balance.get('BTC', {}).get('free', 0.0), 'total': balance.get('BTC', {}).get('total', 0.0)},
             }
+            
             self._balance_cache = {k: v['free'] for k, v in res.items()}
             return res
         except Exception as e:
-            logger.error(f"❌ Error balance: {e}")
+            # Si el error es por la API Key en modo Demo, mostramos un aviso claro
+            if "API-key format" in str(e):
+                logger.error("❌ Error: Tu API Key no es válida para Demo Trading. Generá una en la sección 'Demo Trading' de Binance Futures.")
+            else:
+                logger.error(f"❌ Error balance: {e}")
             return None
 
     def create_order(self, symbol: str, side: str, amount: float, price: float = None, order_type: str = 'market') -> Optional[Dict]:
         try:
-            # Asegurarnos de tener los mercados cargados para la precisión
             if not self.markets:
                 self.load_markets()
 
-            # Usamos las funciones de redondeo nativas de ccxt que son infalibles
+            # Redondeo infalible de CCXT
             amount_prec = self.exchange.amount_to_precision(symbol, amount)
             
-            params = {}
             if order_type.lower() == 'limit':
                 price_prec = self.exchange.price_to_precision(symbol, price)
                 order = self.exchange.create_order(symbol, 'limit', side, amount_prec, price_prec)
             else:
-                # Recomendado para Funding: MARKET
                 order = self.exchange.create_order(symbol, 'market', side, amount_prec)
 
             logger.info(f"✅ Orden {side} exitosa en {symbol}: ID {order['id']}")
@@ -72,12 +86,13 @@ class BinanceClient:
 
     def fetch_funding_rate(self, symbol: str) -> Optional[Dict]:
         try:
+            # ccxt maneja la conversión a fapi internamente
             funding = self.exchange.fetch_funding_rate(symbol)
             return {
                 'symbol': symbol,
-                'fundingRate': funding['fundingRate'],
-                'markPrice': funding['markPrice'],
-                'nextFundingTime': funding['info'].get('nextFundingTime'),
+                'fundingRate': funding.get('fundingRate', 0.0),
+                'markPrice': funding.get('markPrice', 0.0),
+                'nextFundingTime': funding.get('info', {}).get('nextFundingTime'),
             }
         except Exception as e:
             logger.error(f"❌ Error funding {symbol}: {e}")
@@ -86,19 +101,25 @@ class BinanceClient:
     def fetch_ticker(self, symbol: str) -> Optional[Dict]:
         try:
             ticker = self.exchange.fetch_ticker(symbol)
-            return {'last': ticker['last'], 'bid': ticker['bid'], 'ask': ticker['ask']}
+            return {
+                'last': ticker.get('last', 0.0),
+                'bid': ticker.get('bid', 0.0),
+                'ask': ticker.get('ask', 0.0)
+            }
         except Exception as e:
             logger.error(f"❌ Error ticker {symbol}: {e}")
             return None
 
     def close_position(self, symbol: str) -> bool:
         try:
+            # Obtenemos posiciones abiertas
             positions = self.exchange.fetch_positions([symbol])
             for pos in positions:
-                amt = float(pos['contracts'])
+                amt = float(pos.get('contracts', 0))
                 if amt != 0:
-                    side = 'sell' if pos['side'] == 'long' else 'buy'
-                    self.exchange.create_order(symbol, 'market', side, amt, params={'reduceOnly': True})
+                    # Lógica inversa para cerrar
+                    side = 'sell' if amt > 0 else 'buy'
+                    self.exchange.create_order(symbol, 'market', side, abs(amt), params={'reduceOnly': True})
                     logger.info(f"✅ Posición cerrada en {symbol}")
                     return True
             return False
