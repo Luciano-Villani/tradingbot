@@ -15,7 +15,7 @@ load_dotenv(BASE_DIR / "config" / ".env")
 
 from src.logger_config import setup_logger
 from src.exchange_client import BinanceClient
-from src.funding_strategy import FundingArbitrageStrategy
+from src.funding_strategy import FundingArbitrageStrategy , FundingSignal  # ←
 from src.risk_manager import RiskManager
 from src.opportunity_logger import OpportunityLogger
 from src.dashboard import Dashboard
@@ -245,4 +245,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
