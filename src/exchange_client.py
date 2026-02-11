@@ -3,9 +3,10 @@ import ccxt
 from typing import Dict, Optional
 from loguru import logger
 from decimal import Decimal, ROUND_DOWN
+import time
 
 class BinanceClient:
-    """Cliente Binance Futures con endpoint Demo correcto"""
+    """Cliente Binance Futures - Solo FAPI, sin SAPI"""
     
     def __init__(self, paper_mode: bool = True):
         self.paper_mode = paper_mode
@@ -13,7 +14,7 @@ class BinanceClient:
         self.markets = None
         
     def _init_exchange(self) -> ccxt.binance:
-        """Inicializa conexión"""
+        """Inicializa conexión puramente FAPI"""
         
         config = {
             'apiKey': os.getenv('BINANCE_API_KEY'),
@@ -21,6 +22,9 @@ class BinanceClient:
             'enableRateLimit': True,
             'options': {
                 'defaultType': 'future',
+                # Desactivar llamadas a sapi
+                'fetchCurrencies': False,
+                'fetchMarkets': 'futures',
             },
             'timeout': 30000,
         }
@@ -28,7 +32,7 @@ class BinanceClient:
         exchange = ccxt.binance(config)
         
         if self.paper_mode:
-            # FORZAR completamente las URLs a Futures Demo
+            # REEMPLAZAR completamente las URLs, no solo api
             exchange.urls = {
                 'logo': 'https://binance.com',
                 'api': {
@@ -40,7 +44,7 @@ class BinanceClient:
                     'fapiPrivateV2': 'https://demo-fapi.binance.com/fapi/v2',
                 },
                 'www': 'https://www.binance.com',
-                'doc': 'https://binance-docs.github.io/apidocs/spot/en',
+                'doc': 'https://binance-docs.github.io/apidocs/futures/en/',
             }
             logger.info("📝 Futures DEMO: https://demo-fapi.binance.com")
         else:
@@ -49,67 +53,115 @@ class BinanceClient:
         return exchange
     
     def load_markets(self) -> bool:
-        """Carga mercados sin spot API"""
+        """Carga mercados SOLO de futures, sin sapi"""
         try:
             logger.info("⏱️ Sincronizando tiempo...")
             
-            # Sincronizar tiempo manualmente en endpoint correcto
+            # Sincronizar tiempo vía fapi
             try:
-                response = self.exchange.fetch2('time', 'fapiPublic')
+                response = self.exchange.fapiPublicGetTime()
                 server_time = response['serverTime']
-                local_time = self.exchange.milliseconds()
+                local_time = int(time.time() * 1000)
                 self.exchange.options['timeDifference'] = server_time - local_time
-                logger.info(f"✅ Tiempo sincronizado: diff={self.exchange.options['timeDifference']}ms")
+                logger.info(f"✅ Tiempo sync: {self.exchange.options['timeDifference']}ms")
             except Exception as e:
-                logger.warning(f"⚠️ No se pudo sincronizar tiempo: {e}")
+                logger.warning(f"⚠️ Time sync: {e}")
             
-            # Cargar mercados de futures específicamente
-            logger.info("📊 Cargando mercados futures...")
-            self.markets = self.exchange.fetch_markets(params={'type': 'future'})
+            # Cargar mercados manualmente desde fapi
+            logger.info("📊 Cargando mercados de fapi...")
+            
+            # Llamada directa a fapi sin pasar por load_markets de ccxt
+            exchange_info = self.exchange.fapiPublicGetExchangeInfo()
+            
+            # Parsear mercados manualmente
+            self.markets = {}
+            for symbol_info in exchange_info.get('symbols', []):
+                if symbol_info.get('status') == 'TRADING':
+                    symbol = symbol_info['symbol']
+                    base = symbol_info['baseAsset']
+                    quote = symbol_info['quoteAsset']
+                    market_symbol = f"{base}/{quote}:{quote}"  # formato futures
+                    
+                    self.markets[market_symbol] = {
+                        'id': symbol,
+                        'symbol': market_symbol,
+                        'base': base,
+                        'quote': quote,
+                        'active': True,
+                        'precision': {
+                            'amount': symbol_info.get('quantityPrecision', 8),
+                            'price': symbol_info.get('pricePrecision', 8),
+                        },
+                        'limits': {
+                            'amount': {'min': None, 'max': None},
+                            'price': {'min': None, 'max': None},
+                        },
+                        'type': 'future',
+                    }
+            
             logger.info(f"✅ {len(self.markets)} mercados cargados")
             return True
             
         except Exception as e:
             logger.error(f"❌ Error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
     
     def fetch_balance(self) -> Optional[Dict]:
-        """Balance de futures"""
+        """Balance de futures vía fapi únicamente"""
         try:
-            # Usar endpoint de futures explícitamente
-            balance = self.exchange.fetch_balance(params={'type': 'future'})
-            usdt = balance.get('USDT', {})
-            return {
-                'free': float(usdt.get('free', 0)),
-                'used': float(usdt.get('used', 0)),
-                'total': float(usdt.get('total', 0))
-            }
+            logger.info("💰 Consultando balance futures...")
+            
+            # Llamada directa a fapi private
+            account = self.exchange.fapiPrivateGetAccount()
+            
+            # Buscar USDT en assets
+            for asset in account.get('assets', []):
+                if asset['asset'] == 'USDT':
+                    return {
+                        'free': float(asset.get('availableBalance', 0)),
+                        'used': float(asset.get('initialMargin', 0)),
+                        'total': float(asset.get('walletBalance', 0))
+                    }
+            
+            # Si no hay USDT, retornar 0
+            return {'free': 0, 'used': 0, 'total': 0}
+            
         except Exception as e:
             logger.error(f"❌ Error balance: {e}")
             return None
     
     def fetch_funding_rate(self, symbol: str = 'BTC/USDT') -> Optional[Dict]:
-        """Funding rate"""
+        """Funding rate vía fapi"""
         try:
-            funding = self.exchange.fetch_funding_rate(symbol)
+            # Convertir BTC/USDT a BTCUSDT
+            symbol_fapi = symbol.replace('/', '').replace(':USDT', '')
+            
+            funding = self.exchange.fapiPublicGetPremiumIndex({'symbol': symbol_fapi})
+            
             return {
                 'symbol': symbol,
-                'fundingRate': float(funding['fundingRate']),
-                'markPrice': float(funding['markPrice']),
-                'nextFundingTime': funding['nextFundingTimestamp'],
+                'fundingRate': float(funding.get('lastFundingRate', 0)),
+                'markPrice': float(funding.get('markPrice', 0)),
+                'indexPrice': float(funding.get('indexPrice', 0)),
+                'nextFundingTime': funding.get('nextFundingTime', 0),
             }
         except Exception as e:
             logger.error(f"❌ Error funding: {e}")
             return None
     
     def fetch_ticker(self, symbol: str = 'BTC/USDT') -> Optional[Dict]:
-        """Ticker"""
+        """Ticker vía fapi"""
         try:
-            ticker = self.exchange.fetch_ticker(symbol)
+            symbol_fapi = symbol.replace('/', '').replace(':USDT', '')
+            ticker = self.exchange.fapiPublicGetTickerBookTicker({'symbol': symbol_fapi})
+            
             return {
-                'last': float(ticker['last']),
-                'bid': float(ticker['bid']),
-                'ask': float(ticker['ask']),
+                'symbol': symbol,
+                'bid': float(ticker.get('bidPrice', 0)),
+                'ask': float(ticker.get('askPrice', 0)),
+                'last': float(ticker.get('lastPrice', 0)),
             }
         except Exception as e:
             logger.error(f"❌ Error ticker: {e}")
@@ -118,30 +170,46 @@ class BinanceClient:
     def create_order(self, symbol: str, side: str, amount: float, 
                      price: float = None, order_type: str = 'limit',
                      params: Dict = None) -> Optional[Dict]:
-        """Crear orden"""
+        """Crear orden vía fapi"""
         try:
+            symbol_fapi = symbol.replace('/', '').replace(':USDT', '')
+            
+            # Redondear cantidad
             amount = self._round_amount(symbol, amount)
-            order = self.exchange.create_order(
-                symbol=symbol,
-                type=order_type,
-                side=side,
-                amount=amount,
-                price=price,
-                params={'type': 'future', **(params or {})}
-            )
-            logger.info(f"✅ Orden: {order['id']}")
-            return order
+            
+            order_params = {
+                'symbol': symbol_fapi,
+                'side': side.upper(),
+                'type': order_type.upper(),
+                'quantity': amount,
+            }
+            
+            if price and order_type.lower() == 'limit':
+                order_params['price'] = price
+                order_params['timeInForce'] = 'GTC'
+            
+            order = self.exchange.fapiPrivatePostOrder(order_params)
+            
+            logger.info(f"✅ Orden creada: {order.get('orderId')}")
+            return {
+                'id': str(order.get('orderId')),
+                'status': order.get('status', 'NEW'),
+            }
+            
         except Exception as e:
             logger.error(f"❌ Error orden: {e}")
             return None
     
     def _round_amount(self, symbol: str, amount: float) -> float:
+        """Redondea a precisión del mercado"""
         if not self.markets or symbol not in self.markets:
-            return amount
-        precision = self.markets[symbol].get('precision', {}).get('amount', 8)
+            return round(amount, 3)
+        
+        precision = self.markets[symbol].get('precision', {}).get('amount', 3)
         quanto = Decimal(10) ** -precision
         return float(Decimal(str(amount)).quantize(quanto, rounding=ROUND_DOWN))
     
+       
     def close_position(self, symbol: str = 'BTC/USDT') -> bool:
         try:
             positions = self.exchange.fetch_positions([symbol], params={'type': 'future'})
