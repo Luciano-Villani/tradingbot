@@ -1,11 +1,15 @@
 {
   "strategy": {
-    "symbols": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "DOGE/USDT", "ADA/USDT", "AVAX/USDT"],
-    "extreme_threshold": 0.001,
-    "min_threshold": 0.0005,
+    "symbols": [
+      "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", 
+      "XRP/USDT", "DOGE/USDT", "ADA/USDT", "AVAX/USDT",
+      "DOT/USDT", "LINK/USDT", "MATIC/USDT", "SUI/USDT"
+    ],
+    "min_funding_rate": 0.0001,
+    "exit_funding_rate": 0.00005,
     "max_position_size_usd": 100,
-    "leverage": 2,
-    "check_interval_seconds": 30,
+    "leverage": 5,
+    "check_interval_seconds": 60,
     "max_positions": 3
   },
   "risk": {
