@@ -190,27 +190,33 @@ class BinanceClient:
             return None
     
     def _round_amount(self, symbol: str, amount: float) -> float:
-        """Redondea según precisión del mercado de forma ultra-estricta"""
+        """Redondea según precisión del mercado asegurando tipos numéricos"""
         try:
-            # Quitamos la barra si viene con ella para buscar en el diccionario
             symbol_key = symbol.replace('/', '')
             
+            # 1. Si no hay datos, un redondeo genérico seguro
             if not self.markets or symbol_key not in self.markets:
-                return round(amount, 2)
+                return round(float(amount), 2)
             
-            precision = self.markets[symbol_key].get('precision', {}).get('amount', 3)
+            # 2. Forzamos que precision sea un entero (esto evita el error 'str')
+            raw_precision = self.markets[symbol_key].get('precision', {}).get('amount', 3)
+            precision = int(raw_precision) 
             
-            # 1. Convertimos a string con la precisión exacta para evitar basura de coma flotante
-            # 2. Usamos Decimal para truncar hacia abajo (ROUND_DOWN) y evitar exceder el balance
-            amount_str = f"{amount:.10f}" # Tomamos suficientes decimales iniciales
-            step = Decimal(10) ** -precision
-            rounded = Decimal(amount_str).quantize(step, rounding=ROUND_DOWN)
+            # 3. Redondeo usando formateo de string (el método más compatible con Binance)
+            # Esto elimina errores de precisión de coma flotante de Python
+            format_str = f"{{:.{precision}f}}"
+            rounded_str = format_str.format(amount)
             
-            return float(rounded)
+            # 4. Validamos que el resultado sea mayor a cero para evitar error -4003
+            final_amount = float(rounded_str)
+            if final_amount <= 0:
+                logger.warning(f"⚠️ Cantidad calculada para {symbol} es 0 tras redondeo.")
+                
+            return final_amount
             
         except Exception as e:
-            logger.error(f"⚠️ Error en redondeo para {symbol}: {e}")
-            return round(amount, 2)
+            logger.error(f"⚠️ Error crítico en redondeo para {symbol}: {e}")
+            return round(float(amount), 2)
     
     def close_position(self, symbol: str = 'BTC/USDT') -> bool:
         """Cerrar posición"""
