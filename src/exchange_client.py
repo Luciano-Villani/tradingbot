@@ -161,62 +161,72 @@ class BinanceClient:
             logger.error(f"❌ Error ticker {symbol}: {e}")
             return None
     
-    def create_order(self, symbol: str, side: str, amount: float, 
+    def create_order(self, symbol: str, side: str, amount: float,
                      price: float = None, order_type: str = 'limit') -> Optional[Dict]:
-        """Crear orden"""
+        """Crear orden con redondeo estricto de cantidad y precio"""
         try:
             symbol_fapi = symbol.replace('/', '')
             
+            # Redondeo de cantidad
+            qty = self._round_amount(symbol, amount)
+            
+            if qty <= 0:
+                logger.error(f"❌ Cantidad redondeada es 0 o negativa para {symbol}. Amount original: {amount}")
+                return None
+
             params = {
                 'symbol': symbol_fapi,
                 'side': side.upper(),
                 'type': order_type.upper(),
-                'quantity': self._round_amount(symbol, amount),
+                'quantity': qty,
             }
             
-            if order_type == 'limit':
-                params['price'] = price
+            if order_type.lower() == 'limit' and price:
+                # IMPORTANTE: También redondeamos el precio
+                params['price'] = self._round_price(symbol, price)
                 params['timeInForce'] = 'GTC'
+            
+            # Log de depuración para ver qué enviamos exactamente
+            logger.debug(f"Enviando a Binance: {params}")
             
             response = self.exchange.fetch2('order', 'fapiPrivate', 'POST', params)
             
-            logger.info(f"✅ Orden creada: {response.get('orderId')}")
+            order_id = response.get('orderId')
+            logger.info(f"🚀 ORDEN EJECUTADA: {symbol} {side} | ID: {order_id}")
             return {
-                'id': response.get('orderId'),
+                'id': order_id,
                 'status': response.get('status'),
             }
         except Exception as e:
-            logger.error(f"❌ Error orden: {e}")
+            logger.error(f"❌ Error orden en {symbol}: {e}")
             return None
-    
+
     def _round_amount(self, symbol: str, amount: float) -> float:
-        """Redondea según precisión del mercado asegurando tipos numéricos"""
+        """Redondeo de cantidad con manejo de tipos robusto"""
         try:
             symbol_key = symbol.replace('/', '')
-            
-            # 1. Si no hay datos, un redondeo genérico seguro
             if not self.markets or symbol_key not in self.markets:
                 return round(float(amount), 2)
             
-            # 2. Forzamos que precision sea un entero (esto evita el error 'str')
-            raw_precision = self.markets[symbol_key].get('precision', {}).get('amount', 3)
-            precision = int(raw_precision) 
-            
-            # 3. Redondeo usando formateo de string (el método más compatible con Binance)
-            # Esto elimina errores de precisión de coma flotante de Python
-            format_str = f"{{:.{precision}f}}"
-            rounded_str = format_str.format(amount)
-            
-            # 4. Validamos que el resultado sea mayor a cero para evitar error -4003
-            final_amount = float(rounded_str)
-            if final_amount <= 0:
-                logger.warning(f"⚠️ Cantidad calculada para {symbol} es 0 tras redondeo.")
-                
-            return final_amount
-            
+            # Forzamos entero para evitar el error 'str'
+            precision = int(self.markets[symbol_key].get('precision', {}).get('amount', 3))
+            return float(f"{{:.{precision}f}}".format(amount))
         except Exception as e:
-            logger.error(f"⚠️ Error crítico en redondeo para {symbol}: {e}")
+            logger.error(f"Error redondeo cantidad {symbol}: {e}")
             return round(float(amount), 2)
+
+    def _round_price(self, symbol: str, price: float) -> float:
+        """Redondeo de precio (necesario para evitar error -1111 en LIMIT)"""
+        try:
+            symbol_key = symbol.replace('/', '')
+            if not self.markets or symbol_key not in self.markets:
+                return round(float(price), 2)
+            
+            precision = int(self.markets[symbol_key].get('precision', {}).get('price', 2))
+            return float(f"{{:.{precision}f}}".format(price))
+        except Exception as e:
+            logger.error(f"Error redondeo precio {symbol}: {e}")
+            return round(float(price), 2)
     
     def close_position(self, symbol: str = 'BTC/USDT') -> bool:
         """Cerrar posición"""
