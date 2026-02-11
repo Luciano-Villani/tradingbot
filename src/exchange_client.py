@@ -11,7 +11,7 @@ class BinanceClient:
         self.paper_mode = paper_mode
         self.exchange = self._init_exchange()
         self.markets = None
-        self._balance_cache = {'free': 10000.0, 'used': 0.0, 'total': 10000.0}  # Default para demo
+        self._balance_cache = {'USDT': 5000.0, 'USDC': 5000.0, 'BTC': 0.01}
         
     def _init_exchange(self) -> ccxt.binance:
         """Inicializa conexión"""
@@ -22,7 +22,7 @@ class BinanceClient:
             'enableRateLimit': True,
             'options': {
                 'defaultType': 'future',
-                'adjustForTimeDifference': False,  # Lo hacemos manual
+                'adjustForTimeDifference': False,
             },
             'timeout': 30000,
         }
@@ -30,7 +30,6 @@ class BinanceClient:
         exchange = ccxt.binance(config)
         
         if self.paper_mode:
-            # SOLO endpoints fapi, nada de sapi
             exchange.urls = {
                 'logo': 'https://binance.com',
                 'api': {
@@ -52,12 +51,8 @@ class BinanceClient:
     def load_markets(self) -> bool:
         """Carga mercados usando solo fapi"""
         try:
-            logger.info("📊 Cargando mercados...")
-            
-            # Usar fetch2 para llamar directo al endpoint fapi
             response = self.exchange.fetch2('exchangeInfo', 'fapiPublic')
             
-            # Parsear mercados manualmente
             markets = {}
             for symbol_data in response.get('symbols', []):
                 if symbol_data.get('status') == 'TRADING':
@@ -81,41 +76,63 @@ class BinanceClient:
             return False
     
     def fetch_balance(self) -> Optional[Dict]:
-        """Balance usando fapi directo"""
+        """Balance completo de futures"""
         try:
-            # Llamar a fapi/v2/account directamente
             response = self.exchange.fetch2('account', 'fapiPrivateV2')
             
-            # Buscar USDT en assets
             assets = response.get('assets', [])
-            usdt_asset = next((a for a in assets if a.get('asset') == 'USDT'), None)
+            balance = {
+                'USDT': {'free': 0, 'used': 0, 'total': 0},
+                'USDC': {'free': 0, 'used': 0, 'total': 0},
+                'BTC': {'free': 0, 'used': 0, 'total': 0},
+            }
             
-            if usdt_asset:
-                balance = {
-                    'free': float(usdt_asset.get('availableBalance', 0)),
-                    'used': float(usdt_asset.get('initialMargin', 0)),
-                    'total': float(usdt_asset.get('walletBalance', 0))
-                }
-                self._balance_cache = balance
-                return balance
-            else:
-                logger.warning("⚠️ No se encontró USDT en balance")
-                return self._balance_cache
+            for asset in assets:
+                asset_name = asset.get('asset', '')
+                if asset_name in balance:
+                    available = float(asset.get('availableBalance', 0))
+                    wallet = float(asset.get('walletBalance', 0))
+                    balance[asset_name] = {
+                        'free': available,
+                        'used': wallet - available,
+                        'total': wallet
+                    }
+            
+            # Actualizar cache
+            self._balance_cache = {
+                'USDT': balance['USDT']['free'],
+                'USDC': balance['USDC']['free'],
+                'BTC': balance['BTC']['free'],
+            }
+            
+            return balance
                 
         except Exception as e:
             logger.error(f"❌ Error balance: {e}")
-            # En demo, usar cache si falla
             if self.paper_mode:
-                logger.info("📝 Usando balance demo cacheado")
-                return self._balance_cache
+                return {
+                    'USDT': {'free': self._balance_cache['USDT'], 'used': 0, 'total': self._balance_cache['USDT']},
+                    'USDC': {'free': self._balance_cache['USDC'], 'used': 0, 'total': self._balance_cache['USDC']},
+                    'BTC': {'free': self._balance_cache['BTC'], 'used': 0, 'total': self._balance_cache['BTC']},
+                }
             return None
+    
+    def fetch_balance_simple(self) -> Dict:
+        """Versión simplificada para dashboard"""
+        balance = self.fetch_balance()
+        if not balance:
+            return self._balance_cache
+        
+        return {
+            'USDT': balance.get('USDT', {}).get('free', 0),
+            'USDC': balance.get('USDC', {}).get('free', 0),
+            'BTC': balance.get('BTC', {}).get('free', 0),
+        }
     
     def fetch_funding_rate(self, symbol: str = 'BTC/USDT') -> Optional[Dict]:
         """Funding rate"""
         try:
-            # Convertir BTC/USDT a BTCUSDT para fapi
             symbol_fapi = symbol.replace('/', '')
-            
             response = self.exchange.fetch2('premiumIndex', 'fapiPublic', 'GET', {'symbol': symbol_fapi})
             
             return {
@@ -125,7 +142,7 @@ class BinanceClient:
                 'nextFundingTime': response.get('nextFundingTime'),
             }
         except Exception as e:
-            logger.error(f"❌ Error funding: {e}")
+            logger.error(f"❌ Error funding {symbol}: {e}")
             return None
     
     def fetch_ticker(self, symbol: str = 'BTC/USDT') -> Optional[Dict]:
@@ -141,7 +158,7 @@ class BinanceClient:
                 'volume': float(response.get('quoteVolume', 0)),
             }
         except Exception as e:
-            logger.error(f"❌ Error ticker: {e}")
+            logger.error(f"❌ Error ticker {symbol}: {e}")
             return None
     
     def create_order(self, symbol: str, side: str, amount: float, 
@@ -184,7 +201,6 @@ class BinanceClient:
     def close_position(self, symbol: str = 'BTC/USDT') -> bool:
         """Cerrar posición"""
         try:
-            # Obtener posición abierta
             symbol_fapi = symbol.replace('/', '')
             response = self.exchange.fetch2('positionRisk', 'fapiPrivate', 'GET', {'symbol': symbol_fapi})
             
@@ -193,7 +209,6 @@ class BinanceClient:
             for pos in positions:
                 position_amt = float(pos.get('positionAmt', 0))
                 if position_amt != 0:
-                    # Cerrar con orden market opuesta
                     side = 'SELL' if position_amt > 0 else 'BUY'
                     
                     self.exchange.fetch2('order', 'fapiPrivate', 'POST', {
@@ -206,11 +221,11 @@ class BinanceClient:
                     logger.info(f"✅ Posición cerrada: {symbol}")
                     return True
             
-            logger.info("📭 No hay posición para cerrar")
+            logger.info(f"📭 No hay posición en {symbol}")
             return False
             
         except Exception as e:
-            logger.error(f"❌ Error cerrando: {e}")
+            logger.error(f"❌ Error cerrando {symbol}: {e}")
             return False
     
     def get_position(self, symbol: str = 'BTC/USDT') -> Optional[Dict]:
@@ -234,6 +249,6 @@ class BinanceClient:
             return None
             
         except Exception as e:
-            logger.error(f"❌ Error posición: {e}")
+            logger.error(f"❌ Error posición {symbol}: {e}")
             return None
         

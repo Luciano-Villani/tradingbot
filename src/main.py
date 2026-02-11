@@ -5,6 +5,7 @@ import asyncio
 import time
 from pathlib import Path
 from datetime import datetime
+from typing import Dict, List
 
 BASE_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(BASE_DIR))
@@ -16,6 +17,8 @@ from src.logger_config import setup_logger
 from src.exchange_client import BinanceClient
 from src.funding_strategy import FundingArbitrageStrategy
 from src.risk_manager import RiskManager
+from src.opportunity_logger import OpportunityLogger
+from src.dashboard import Dashboard
 
 logger = setup_logger(BASE_DIR / "config" / "settings.json")
 
@@ -23,152 +26,213 @@ class ArgenFundingBot:
     def __init__(self):
         self.config = self._load_config()
         self.paper_mode = os.getenv('PAPER_MODE', 'true').lower() == 'true'
-        self.client = None
-        self.strategy = None
-        self.risk = None
+        
+        self.client: BinanceClient = None
+        self.strategy: FundingArbitrageStrategy = None
+        self.risk: RiskManager = None
+        self.opp_logger: OpportunityLogger = None
+        self.dashboard: Dashboard = None
+        
         self.running = False
         self.cycle_count = 0
         self.start_time = None
         
-    def _load_config(self):
+    def _load_config(self) -> Dict:
         try:
             with open(BASE_DIR / "config" / "settings.json") as f:
                 return json.load(f)
         except Exception as e:
-            logger.error(f"Error config: {e}")
+            logger.error(f"Error cargando config: {e}")
             return {}
     
     async def initialize(self) -> bool:
-        logger.info("="*60)
-        logger.info("ARGENFUNDING BOT v1.0 - Argentina Optimized")
-        logger.info(f"Inicio: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info(f"Paper Mode: {self.paper_mode}")
-        logger.info("="*60)
+        # Inicializar dashboard primero
+        self.dashboard = Dashboard()
+        self.dashboard.add_message("Iniciando bot...")
+        self.dashboard.render()
+        
+        self.start_time = datetime.now()
         
         self.client = BinanceClient(paper_mode=self.paper_mode)
         if not self.client.load_markets():
+            self.dashboard.add_message("❌ Error cargando mercados")
             return False
         
         balance = self.client.fetch_balance()
         if not balance:
+            self.dashboard.add_message("❌ Error obteniendo balance")
             return False
         
-        logger.info(f"Balance: ${balance['free']:.2f} USDT disponible")
+        # Actualizar dashboard con balance
+        balance_simple = self.client.fetch_balance_simple()
+        self.dashboard.update_balance(balance_simple)
+        self.dashboard.add_message(f"Balance cargado: ${balance_simple['USDT']:,.2f} USDT")
         
         self.strategy = FundingArbitrageStrategy(self.config['strategy'])
         self.risk = RiskManager(self.config['risk'])
-        self.start_time = datetime.now()
+        self.opp_logger = OpportunityLogger()
+        
+        self.dashboard.add_message(f"✅ Bot listo - {len(self.config['strategy']['symbols'])} pares")
         return True
     
     async def run(self):
         self.running = True
+        symbols = self.config['strategy']['symbols']
+        
+        self.dashboard.add_message(f"Monitoreando {len(symbols)} pares...")
+        
         while self.running:
             self.cycle_count += 1
-            cycle_start = time.time()
             
             try:
-                await self._execute_cycle()
+                await self._execute_cycle_multi(symbols)
+                
             except KeyboardInterrupt:
-                logger.info("Interrupción usuario")
+                self.dashboard.add_message("⛔ Detenido por usuario")
                 await self._graceful_shutdown()
                 break
+                
             except Exception as e:
-                logger.exception(f"Error crítico: {e}")
+                self.dashboard.add_message(f"❌ Error: {str(e)[:50]}")
                 self.risk.register_error(critical=True)
                 await asyncio.sleep(60)
             
-            elapsed = time.time() - cycle_start
-            sleep_time = max(0, self.config['strategy']['check_interval_seconds'] - elapsed)
-            if sleep_time > 0:
-                await asyncio.sleep(sleep_time)
+            # Controlar frecuencia
+            await asyncio.sleep(self.config['strategy']['check_interval_seconds'])
+            
+            # Guardar resumen cada hora
+            if self.cycle_count % 120 == 0:
+                self.opp_logger.save_daily_summary()
     
-    async def _execute_cycle(self):
+    async def _execute_cycle_multi(self, symbols: List[str]):
+        """Ejecuta ciclo para múltiples pares"""
+        
         if not self.risk.can_trade():
-            if self.cycle_count % 10 == 0:
-                logger.warning("Trading pausado por riesgo")
+            self.dashboard.add_message("⏸️ Trading pausado por riesgo")
+            self.dashboard.render()
             return
         
-        funding = self.client.fetch_funding_rate(self.config['strategy']['symbol'])
-        ticker = self.client.fetch_ticker(self.config['strategy']['symbol'])
+        # Obtener balance
+        balance_simple = self.client.fetch_balance_simple()
+        available_usdt = balance_simple['USDT']
+        self.dashboard.update_balance(balance_simple)
         
-        if not funding or not ticker:
-            self.risk.register_error()
-            return
+        # Scanear cada par
+        for symbol in symbols:
+            funding = self.client.fetch_funding_rate(symbol)
+            ticker = self.client.fetch_ticker(symbol)
+            
+            if not funding or not ticker:
+                self.dashboard.update_symbol(symbol, 0, "ERROR DATOS")
+                continue
+            
+            # Evaluar señal
+            signal = self.strategy.update(symbol, funding, ticker)
+            
+            if signal:
+                self.dashboard.increment_opportunities()
+                
+                # Determinar si ejecutar
+                should_execute = self._should_execute(signal, available_usdt)
+                
+                # Loguear oportunidad
+                self.opp_logger.log_opportunity(
+                    symbol=signal.symbol,
+                    funding_rate=signal.funding_rate,
+                    mark_price=signal.mark_price,
+                    action=signal.action,
+                    confidence=signal.confidence,
+                    expected_profit_bps=signal.expected_profit_bps,
+                    executed=should_execute
+                )
+                
+                # Actualizar dashboard
+                status = "EJECUTANDO" if should_execute else "DETECTADA"
+                self.dashboard.update_symbol(symbol, signal.funding_rate, f"{status}: {signal.action}")
+                self.dashboard.add_message(f"🎯 {symbol} {signal.action} | Funding: {signal.funding_rate:.4%}")
+                
+                # Ejecutar si corresponde
+                if should_execute:
+                    success = await self._execute_signal(signal, available_usdt)
+                    if success:
+                        available_usdt -= self.strategy.calculate_size(signal.confidence, available_usdt)
+            else:
+                # Sin señal, mostrar funding actual
+                self.dashboard.update_symbol(symbol, funding['fundingRate'], "MONITOREANDO")
+            
+            await asyncio.sleep(0.1)
         
-        signal = self.strategy.update(funding, ticker)
-        
-        if signal:
-            await self._execute_signal(signal)
-        
-        if self.cycle_count % 20 == 0:
-            self._log_status(funding, ticker)
+        # Actualizar posiciones en dashboard
+        self.dashboard.update_positions(self.strategy.get_positions_for_dashboard())
+        self.dashboard.update_pnl(self.opp_logger.get_stats()['pnl_today'])
+        self.dashboard.render()
     
-    async def _execute_signal(self, signal):
-        if signal.action in ['open_short', 'open_long']:
-            if self.strategy.position:
-                return
+    def _should_execute(self, signal: FundingSignal, available_usdt: float) -> bool:
+        """Determina si ejecutar una señal"""
+        
+        size = self.strategy.calculate_size(signal.confidence, available_usdt)
+        if size < 10:
+            return False
+        
+        if signal.symbol in self.strategy.get_active_positions():
+            return False
+        
+        if self.strategy.get_position_count() >= self.config['strategy']['max_positions']:
+            return False
+        
+        return True
+    
+    async def _execute_signal(self, signal: FundingSignal, available_usdt: float) -> bool:
+        """Ejecuta señal de trading"""
+        
+        size_usd = self.strategy.calculate_size(signal.confidence, available_usdt)
+        if size_usd < 10:
+            return False
+        
+        btc_amount = (size_usd * self.config['strategy']['leverage']) / signal.mark_price
+        side = 'sell' if signal.action == 'open_short' else 'buy'
+        
+        order = self.client.create_order(
+            symbol=signal.symbol,
+            side=side,
+            amount=btc_amount,
+            price=signal.mark_price * (0.999 if side == 'buy' else 1.001),
+            order_type='limit'
+        )
+        
+        if order:
+            position_side = 'short' if signal.action == 'open_short' else 'long'
+            self.strategy.register_position(signal.symbol, position_side, signal.funding_rate, size_usd)
             
-            self.risk.register_position_opened()
-            balance = self.client.fetch_balance()
-            if not balance:
-                return
-            
-            size_usd = self.strategy.calculate_size(signal.confidence, balance['free'])
-            if size_usd < 10:
-                return
-            
-            btc_amount = (size_usd * self.config['strategy']['leverage']) / signal.mark_price
-            side = 'sell' if signal.action == 'open_short' else 'buy'
-            
-            order = self.client.create_order(
+            self.opp_logger.log_trade_entry(
                 symbol=signal.symbol,
-                side=side,
-                amount=btc_amount,
-                price=signal.mark_price * (0.999 if side == 'buy' else 1.001),
-                order_type='limit',
-                params={'leverage': self.config['strategy']['leverage']}
+                action=signal.action,
+                size_usd=size_usd,
+                entry_price=signal.mark_price,
+                funding_rate=signal.funding_rate
             )
             
-            if order:
-                self.strategy.register_position(
-                    'short' if signal.action == 'open_short' else 'long',
-                    signal.funding_rate
-                )
-                logger.info(f"TRADE,OPEN,{signal.action},{size_usd},{signal.mark_price},{signal.funding_rate}")
+            self.risk.register_position_opened()
+            self.dashboard.add_message(f"✅ ORDEN EXECUTADA: {signal.symbol} {signal.action}")
+            return True
         
-        elif signal.action == 'close':
-            if self.client.close_position(signal.symbol):
-                pnl = 0.5 if self.paper_mode else 0  # Simplificado
-                self.risk.register_trade(pnl)
-                self.strategy.clear_position()
-                logger.info(f"TRADE,CLOSE,,,{pnl},")
-        
-        elif signal.action == 'close_and_reverse':
-            if self.client.close_position(signal.symbol):
-                pnl = 0.5 if self.paper_mode else 0
-                self.risk.register_trade(pnl)
-                self.strategy.clear_position()
-                logger.info(f"TRADE,CLOSE_REVERSE,,,{pnl},")
-                await asyncio.sleep(5)
-    
-    def _log_status(self, funding: Dict, ticker: Dict):
-        uptime = datetime.now() - self.start_time
-        risk_status = self.risk.get_status()
-        logger.info(
-            f"Status | Ciclos: {self.cycle_count} | "
-            f"Uptime: {uptime} | "
-            f"Funding: {funding['fundingRate']:.4%} | "
-            f"Price: ${ticker['last']:,.2f} | "
-            f"P&L: ${risk_status['pnl_usd']:.2f}"
-        )
+        return False
     
     async def _graceful_shutdown(self):
-        logger.info("Cerrando bot...")
+        """Cierre ordenado"""
+        self.dashboard.add_message("Cerrando bot...")
         self.running = False
-        if self.strategy and self.strategy.position:
-            self.client.close_position(self.config['strategy']['symbol'])
-        uptime = datetime.now() - self.start_time
-        logger.info(f"Bot detenido. Uptime: {uptime}")
+        
+        if self.opp_logger:
+            self.opp_logger.save_daily_summary()
+        
+        active = self.strategy.get_active_positions() if self.strategy else []
+        for symbol in active:
+            self.client.close_position(symbol)
+        
+        self.dashboard.render()
+        print("\nBot detenido. Presiona Enter para salir...")
+        input()
 
 def main():
     bot = ArgenFundingBot()
@@ -176,9 +240,9 @@ def main():
         if asyncio.run(bot.initialize()):
             asyncio.run(bot.run())
     except Exception as e:
-        logger.exception(f"Fatal: {e}")
+        print(f"Error fatal: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
     main()
-
+    

@@ -1,16 +1,16 @@
-
 {
   "strategy": {
-    "symbol": "BTC/USDT",
-    "min_funding_threshold": 0.0005,
-    "extreme_funding_threshold": 0.001,
+    "symbols": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "DOGE/USDT", "ADA/USDT", "AVAX/USDT"],
+    "extreme_threshold": 0.001,
+    "min_threshold": 0.0005,
     "max_position_size_usd": 100,
     "leverage": 2,
-    "check_interval_seconds": 30
+    "check_interval_seconds": 30,
+    "max_positions": 3
   },
   "risk": {
     "max_daily_loss_usd": 50,
-    "max_positions": 1,
+    "max_positions": 3,
     "max_errors_per_day": 10,
     "auto_stop_on_errors": true
   },
@@ -21,4 +21,3 @@
     "retention_days": 7
   }
 }
-
