@@ -20,7 +20,7 @@ class Dashboard:
         }
 
     def update_positions(self, positions: Dict):
-        """Recibe el diccionario de get_positions_for_dashboard()"""
+        """Recibe datos detallados de funding_strategy.get_positions_for_dashboard()"""
         self.positions = positions
 
     def update_balance(self, balance: Dict):
@@ -28,6 +28,9 @@ class Dashboard:
 
     def update_pnl(self, pnl: float):
         self.pnl_today = pnl
+
+    def increment_opportunities(self):
+        self.opportunities_count += 1
 
     def add_message(self, msg: str):
         self.messages.append(f"{datetime.now().strftime('%H:%M:%S')} {msg}")
@@ -37,7 +40,7 @@ class Dashboard:
         os.system('cls' if os.name == 'nt' else 'clear')
         uptime = datetime.now() - self.start_time
         
-        # Filtrar solo pares activos (8 configurados)
+        # Filtrar solo pares activos
         active_symbols = {
             s: d for s, d in self.symbols_data.items() 
             if d['last_update'] > datetime.now() - timedelta(minutes=5)
@@ -48,7 +51,7 @@ class Dashboard:
         print(f"║{f'Uptime: {str(uptime).split('.')[0]} | UTC: {datetime.now(timezone.utc).strftime('%H:%M:%S')}':^78}║")
         print("╠" + "═" * 78 + "╣")
         
-        # Stats
+        # Stats Generales
         pnl_str = f"${self.pnl_today:,.2f}"
         print(f"║ Pares: {len(active_symbols):<10} | Posiciones: {len(self.positions)}/3 | PnL Hoy: {pnl_str:<23} ║")
         print("╠" + "═" * 78 + "╣")
@@ -65,24 +68,35 @@ class Dashboard:
 
         print("╠" + "═" * 78 + "╣")
         
-        # SECCIÓN NUEVA: POSICIONES DETALLADAS
+        # SECCIÓN DE POSICIONES ACTIVAS (La gran mejora visual)
         if self.positions:
-            print(f"║ {'POSICIONES ACTIVAS (HOLD & CYCLES)':^78} ║")
-            print(f"║ {'PAR':<10} {'L/S':<5} {'SIZE':<10} {'HOLD':<10} {'COBROS':<10} {'PRÓX. FUNDING':<15} ║")
+            print(f"║ {'POSICIONES EN CURSO (HOLD & FUNDING)':^78} ║")
+            print(f"║ {'PAR':<10} {'L/S':<5} {'SIZE':<10} {'HOLD':<10} {'COBROS':<10} {'PRÓX. UTC':<15} ║")
+            print("╟" + "─" * 78 + "╢")
             for symbol, pos in self.positions.items():
                 side = pos['side'].upper()
                 size = f"${pos['size_usd']:.0f}"
-                hold = f"{pos['hold_hours']}h"
+                hold = f"{pos['hold_hours']:.1f}h"
                 cycles = f"x{pos['cycles_captured']}"
                 next_f = pos['next_funding']
-                # Cambiar color de ciclos si ya cobró al menos uno
-                cycle_icon = "✅" if pos['cycles_captured'] > 0 else "⏳"
                 
-                print(f"║ {symbol:<10} {side:<5} {size:<10} {hold:<10} {cycle_icon} {cycles:<7} {next_f:<15} ║")
+                # Icono dinámico según si ya capturó funding o no
+                status_icon = "✅" if pos['cycles_captured'] > 0 else "⏳"
+                
+                print(f"║ {symbol:<10} {side:<5} {size:<10} {hold:<10} {status_icon} {cycles:<7} {next_f:<15} ║")
         else:
-            print(f"║ {'Buscando entradas rentables (Break-even activo)...':^78} ║")
+            print(f"║ {'--- SIN POSICIONES ABIERTAS (Esperando Break-even) ---':^78} ║")
 
         print("╠" + "═" * 78 + "╣")
+        
+        # Balances rápidos
+        balance_str = f"USDT: {self.balance.get('USDT', 0):>8.2f} | USDC: {self.balance.get('USDC', 0):>8.2f}"
+        print(f"║ BALANCE TOTAL: {balance_str:<60} ║")
+        
+        print("╠" + "═" * 78 + "╣")
+        # Logs en pantalla
         for msg in self.messages[-3:]:
             print(f"║ {msg:<76} ║")
         print("╚" + "═" * 78 + "╝")
+        print("\nPresiona Ctrl+C para detener el bot")
+        
