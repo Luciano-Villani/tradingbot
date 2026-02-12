@@ -100,3 +100,4 @@ class Dashboard:
         print("╚" + "═" * 78 + "╝")
         print("\nPresiona Ctrl+C para detener el bot")
         
+                
