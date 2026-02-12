@@ -37,8 +37,8 @@ class FundingArbitrageStrategy:
         self.positions: Dict[str, Dict] = {}
         
         # --- AJUSTE DE COSTOS REALISTAS ---
-        self.estimated_slippage_bps = 2  # Bajamos a 2 bps (0.02%)
-        self.taker_fee_bps = 4           # 0.04% (Binance Standard)
+        self.estimated_slippage_bps = 1  # Bajamos a 2 bps (0.02%)
+        self.taker_fee_bps = 2           # 0.04% (Binance Standard)
         self.break_even_rate = self._calculate_break_even_rate()
         
         logger.info(f"✅ Estrategia: {len(self.symbols)} pares | Break-even: {self.break_even_rate:.4%}")
