@@ -3,7 +3,7 @@ import sys
 import json
 import asyncio
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List
 
 # Configuración de rutas
@@ -133,12 +133,33 @@ class ArgenFundingBot:
             signal = self.strategy.update(symbol, funding, ticker)
             
             if signal:
+                # NUEVO: Loguear oportunidad detectada
+                mins_to_funding = self.strategy._time_to_next_funding() if hasattr(self.strategy, '_time_to_next_funding') else 0
+                
+                should_execute = False
+                if signal.action == 'close':
+                    should_execute = True
+                else:
+                    should_execute = self._should_execute_entry(signal, available_usdt)
+                
+                self.opp_logger.log_opportunity(
+                    symbol=signal.symbol,
+                    funding_rate=signal.funding_rate,
+                    mark_price=signal.mark_price,
+                    action=signal.action,
+                    confidence=signal.confidence,
+                    expected_profit_bps=signal.expected_profit_bps,
+                    executed=should_execute,
+                    next_funding_time=signal.next_funding_time,
+                    mins_to_funding=mins_to_funding
+                )
+                
                 # ACCIÓN: CERRAR
                 if signal.action == 'close':
                     await self._execute_close(signal)
                 
                 # ACCIÓN: ABRIR
-                elif self._should_execute_entry(signal, available_usdt):
+                elif should_execute:
                     success = await self._execute_entry(signal, available_usdt)
                     if success:
                         # Actualizar disponible local para el siguiente par del ciclo
@@ -177,11 +198,13 @@ class ArgenFundingBot:
         )
         
         if order:
+            # NUEVO: Guardar entry_price para cálculo de PnL real
             self.strategy.register_position(
                 signal.symbol, 
                 'short' if side == 'sell' else 'long', 
                 signal.funding_rate, 
-                size_usd
+                size_usd,
+                signal.mark_price  # NUEVO: entry_price
             )
             self.opp_logger.log_trade_entry(
                 symbol=signal.symbol,
@@ -213,19 +236,33 @@ class ArgenFundingBot:
         )
         
         if order:
-            # PnL Estimado basado en funding acumulado
-            pnl_estimado = (pos_info['size_usd'] * abs(pos_info['entry_rate'])) * metrics['cycles_captured']
+            # NUEVO: Calcular PnL real (precio + funding)
+            entry_price = pos_info.get('entry_price', signal.mark_price)
+            exit_price = signal.mark_price
+            size_usd = pos_info['size_usd']
+            leverage = self.strategy.leverage
+            
+            # PnL por movimiento de precio
+            if pos_info['side'] == 'short':
+                price_pnl = (entry_price - exit_price) / entry_price * size_usd * leverage
+            else:
+                price_pnl = (exit_price - entry_price) / entry_price * size_usd * leverage
+            
+            # PnL por funding capturado
+            funding_pnl = size_usd * abs(pos_info['entry_rate']) * metrics['cycles_captured']
+            
+            pnl_total = price_pnl + funding_pnl
             
             self.opp_logger.log_trade_exit(
                 symbol=signal.symbol,
                 exit_price=signal.mark_price,
-                pnl_usd=pnl_estimado,
+                pnl_usd=pnl_total,
                 cycles_captured=metrics['cycles_captured'],
                 hold_hours=metrics['hold_hours']
             )
             
             self.strategy.clear_position(signal.symbol)
-            self.dashboard.add_message(f"🚪 CERRADO: {signal.symbol} | Ciclos: {metrics['cycles_captured']}")
+            self.dashboard.add_message(f"🚪 CERRADO: {signal.symbol} | Ciclos: {metrics['cycles_captured']} | PnL: ${pnl_total:.2f}")
 
     async def _graceful_shutdown(self):
         self.running = False

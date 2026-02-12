@@ -48,7 +48,7 @@ class Dashboard:
 
         print("╔" + "═" * 78 + "╗")
         print(f"║{'ARGENFUNDING BOT v2.0 - ESTRATEGIA SINCRONIZADA':^78}║")
-        print(f"║{f'Uptime: {str(uptime).split('.')[0]} | UTC: {datetime.now(timezone.utc).strftime('%H:%M:%S')}':^78}║")
+        print(f"""║{f"Uptime: {str(uptime).split('.')[0]} | UTC: {datetime.now(timezone.utc).strftime('%H:%M:%S')}":^78}║""")
         print("╠" + "═" * 78 + "╣")
         
         # Stats Generales

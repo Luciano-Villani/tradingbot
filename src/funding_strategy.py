@@ -53,46 +53,79 @@ class FundingArbitrageStrategy:
         return (total_cost_bps / 2) / 10000
     
     def _next_funding_time(self, now: datetime = None) -> datetime:
-        """Calcula el próximo funding en UTC"""
+        """Calcula el próximo ciclo de funding (00:00, 08:00, 16:00 UTC)"""
+        # 1. Forzar UTC explícitamente
         if now is None:
             now = datetime.now(timezone.utc)
+        elif now.tzinfo is None:
+            # Si viene sin timezone, asumir UTC
+            now = now.replace(tzinfo=timezone.utc)
         
-        current_hour = now.hour
+        # 2. Normalizar a UTC por si acaso
+        now_utc = now.astimezone(timezone.utc)
+        current_hour = now_utc.hour
+        current_minute = now_utc.minute
         
+        # 3. Buscar próximo funding
         for funding_hour in self.funding_hours:
-            if current_hour < funding_hour:
-                return now.replace(hour=funding_hour, minute=0, second=0, microsecond=0)
+            if current_hour < funding_hour or (current_hour == funding_hour and current_minute < 5):
+                # Damos 5 minutos de margen después del funding para considerarlo "pasado"
+                return now_utc.replace(hour=funding_hour, minute=0, second=0, microsecond=0)
         
-        # Si pasamos el último de hoy, es mañana a las 00:00
-        tomorrow = now + timedelta(days=1)
+        # 4. Si estamos después de las 16:00, el próximo es mañana 00:00
+        tomorrow = now_utc + timedelta(days=1)
         return tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
 
+    def _time_to_next_funding(self, now: datetime = None) -> float:
+        """
+        Minutos hasta el próximo funding
+        """
+        next_funding = self._next_funding_time(now)
+        if now is None:
+            now = datetime.now(timezone.utc)
+        elif now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        
+        now_utc = now.astimezone(timezone.utc)
+        return (next_funding - now_utc).total_seconds() / 60
+    
+   
     def _count_funding_cycles(self, entry_time: datetime, exit_time: datetime = None) -> int:
         """Cuenta cuántos pagos de funding ocurrieron entre entry y exit"""
+        # 1. Normalizar ambos tiempos a UTC
         if exit_time is None:
             exit_time = datetime.now(timezone.utc)
+        elif exit_time.tzinfo is None:
+            exit_time = exit_time.replace(tzinfo=timezone.utc)
+        
+        if entry_time.tzinfo is None:
+            entry_time = entry_time.replace(tzinfo=timezone.utc)
+        
+        # Asegurar que ambos estén en UTC
+        entry_utc = entry_time.astimezone(timezone.utc)
+        exit_utc = exit_time.astimezone(timezone.utc)
         
         cycles = 0
-        current = entry_time.replace(minute=0, second=0, microsecond=0)
+        # Empezar desde la hora exacta de entrada
+        current = entry_utc.replace(minute=0, second=0, microsecond=0)
         
         # Avanzar hora por hora hasta exit_time
-        while current < exit_time:
+        while current < exit_utc:
             if current.hour in self.funding_hours:
-                # Verificar que estuvimos en posición durante el snapshot (00:00 UTC)
-                snapshot_time = current.replace(minute=0, second=0)
-                if entry_time <= snapshot_time:
+                # El funding se paga al INICIO de la hora (00:00, 08:00, 16:00)
+                # Para capturarlo, debemos estar en posición ANTES de esa hora
+                funding_time = current.replace(minute=0, second=0, microsecond=0)
+                
+                # Estuvimos en posición durante el snapshot del funding?
+                if entry_utc < funding_time and exit_utc > funding_time:
                     cycles += 1
+                    logger.debug(f"✅ Ciclo capturado: {funding_time.strftime('%H:%M UTC')}")
+            
             current += timedelta(hours=1)
         
         return cycles
 
-    def _time_to_next_funding(self, now: datetime = None) -> float:
-        """Minutos hasta el próximo funding"""
-        if now is None:
-            now = datetime.now(timezone.utc)
-        next_funding = self._next_funding_time(now)
-        return (next_funding - now).total_seconds() / 60
-
+    
     def update(self, symbol: str, funding_data: Dict, ticker_data: Dict) -> Optional[FundingSignal]:
         """Procesa datos y decide si hay señal de trading"""
         if not funding_data or not ticker_data:
@@ -260,11 +293,12 @@ class FundingArbitrageStrategy:
         final_size = min(size_with_leverage, limit_size)
         return round(final_size, 2) if final_size >= 15.0 else 0.0
 
-    def register_position(self, symbol: str, side: str, entry_rate: float, size_usd: float):
+    def register_position(self, symbol: str, side: str, entry_rate: float, size_usd: float, entry_price: float = None):
         self.positions[symbol] = {
             'side': side.lower(),
             'entry_rate': entry_rate,
-            'entry_time': datetime.now(timezone.utc),  # NUEVO: Forzar UTC
+            'entry_price': entry_price,  # NUEVO
+            'entry_time': datetime.now(timezone.utc),
             'size_usd': size_usd
         }
 
@@ -317,3 +351,94 @@ class FundingArbitrageStrategy:
             'next_funding_time': self._next_funding_time(now)
         }
     
+"""
+if __name__ == "__main__":
+    # Test de timezone y cálculo de funding
+    from datetime import timezone
+    
+    print("=" * 50)
+    print("TEST: Sistema de cálculo de funding")
+    print("=" * 50)
+    
+    strategy = FundingArbitrageStrategy({
+        'symbols': ['BTC/USDT'],
+        'min_funding_rate': 0.0001,
+        'exit_funding_rate': 0.00005,
+        'max_position_size_usd': 100,
+        'leverage': 5,
+        'max_positions': 3
+    })
+    
+    # Test 1: 06:25 UTC (caso del bug - debe retornar 08:00)
+    test_time = datetime(2026, 2, 12, 6, 25, 0, tzinfo=timezone.utc)
+    next_funding = strategy._next_funding_time(test_time)
+    mins = strategy._time_to_next_funding(test_time)
+    
+    print(f"\n🧪 Test 1 - Entrada a las 06:25 UTC:")
+    print(f"   Próximo funding calculado: {next_funding.strftime('%H:%M UTC')}")
+    print(f"   Minutos hasta funding: {mins:.0f}")
+    print(f"   Esperado: 08:00 UTC (95 minutos)")
+    
+    if next_funding.hour == 8 and abs(mins - 95) < 1:
+        print("   ✅ PASS")
+    else:
+        print("   ❌ FAIL - Esto explica el bug!")
+        print(f"   ⚠️  El bot pensó que faltaban {mins:.0f} min para {next_funding.strftime('%H:%M')}")
+    
+    # Test 2: 07:55 UTC (justo antes del funding)
+    test_time2 = datetime(2026, 2, 12, 7, 55, 0, tzinfo=timezone.utc)
+    next_funding2 = strategy._next_funding_time(test_time2)
+    mins2 = strategy._time_to_next_funding(test_time2)
+    
+    print(f"\n🧪 Test 2 - 07:55 UTC (5 min antes del funding):")
+    print(f"   Próximo funding: {next_funding2.strftime('%H:%M UTC')}")
+    print(f"   Minutos: {mins2:.0f}")
+    print(f"   Esperado: 08:00 UTC (5 minutos)")
+    print("   ✅ PASS" if next_funding2.hour == 8 and abs(mins2 - 5) < 1 else "   ❌ FAIL")
+    
+    # Test 3: 08:05 UTC (justo después del funding)
+    test_time3 = datetime(2026, 2, 12, 8, 5, 0, tzinfo=timezone.utc)
+    next_funding3 = strategy._next_funding_time(test_time3)
+    mins3 = strategy._time_to_next_funding(test_time3)
+    
+    print(f"\n🧪 Test 3 - 08:05 UTC (5 min después del funding):")
+    print(f"   Próximo funding: {next_funding3.strftime('%H:%M UTC')}")
+    print(f"   Minutos: {mins3:.0f}")
+    print(f"   Esperado: 16:00 UTC (475 minutos)")
+    print("   ✅ PASS" if next_funding3.hour == 16 and abs(mins3 - 475) < 1 else "   ❌ FAIL")
+    
+    # Test 4: Hora actual del servidor
+    now = datetime.now(timezone.utc)
+    next_funding_now = strategy._next_funding_time(now)
+    mins_now = strategy._time_to_next_funding(now)
+    
+    print(f"\n🧪 Test 4 - Hora actual del servidor:")
+    print(f"   Hora servidor: {now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    print(f"   Próximo funding: {next_funding_now.strftime('%H:%M UTC')}")
+    print(f"   Minutos restantes: {mins_now:.0f}")
+
+    # Test 5: Conteo de ciclos de funding
+    print(f"\n🧪 Test 5 - Conteo de ciclos capturados:")
+    
+    # Caso 1: Entrada 06:25, salida 09:30 (debería capturar 1 ciclo: 08:00)
+    entry1 = datetime(2026, 2, 12, 6, 25, 0, tzinfo=timezone.utc)
+    exit1 = datetime(2026, 2, 12, 9, 30, 0, tzinfo=timezone.utc)
+    cycles1 = strategy._count_funding_cycles(entry1, exit1)
+    print(f"   Entrada 06:25, Salida 09:30 → Ciclos: {cycles1} (Esperado: 1)")
+    print("   ✅ PASS" if cycles1 == 1 else f"   ❌ FAIL - Esto es el bug del trade de ADA!")
+    
+    # Caso 2: Entrada 06:25, salida 07:30 (debería capturar 0 ciclos)
+    entry2 = datetime(2026, 2, 12, 6, 25, 0, tzinfo=timezone.utc)
+    exit2 = datetime(2026, 2, 12, 7, 30, 0, tzinfo=timezone.utc)
+    cycles2 = strategy._count_funding_cycles(entry2, exit2)
+    print(f"   Entrada 06:25, Salida 07:30 → Ciclos: {cycles2} (Esperado: 0)")
+    print("   ✅ PASS" if cycles2 == 0 else "   ❌ FAIL")
+    
+    # Caso 3: Entrada 06:25, salida 17:00 (debería capturar 2 ciclos: 08:00 y 16:00)
+    entry3 = datetime(2026, 2, 12, 6, 25, 0, tzinfo=timezone.utc)
+    exit3 = datetime(2026, 2, 12, 17, 0, 0, tzinfo=timezone.utc)
+    cycles3 = strategy._count_funding_cycles(entry3, exit3)
+    print(f"   Entrada 06:25, Salida 17:00 → Ciclos: {cycles3} (Esperado: 2)")
+    print("   ✅ PASS" if cycles3 == 2 else "   ❌ FAIL")
+    
+    print("\n" + "=" * 50) """
