@@ -256,3 +256,4 @@ class OpportunityLogger:
             logger.error(f"Error calculando performance: {e}")
         
         return performance
+    
