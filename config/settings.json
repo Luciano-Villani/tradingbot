@@ -2,8 +2,7 @@
   "strategy": {
     "symbols": [
       "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", 
-      "XRP/USDT", "DOGE/USDT", "ADA/USDT", "AVAX/USDT",
-      "DOT/USDT", "LINK/USDT", "MATIC/USDT", "SUI/USDT"
+      "XRP/USDT", "DOGE/USDT", "ADA/USDT", "AVAX/USDT"
     ],
     "min_funding_rate": 0.0001,
     "exit_funding_rate": 0.00005,
