@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from loguru import logger
+
 class OpportunityLogger:
     """Registra oportunidades detectadas y trades ejecutados con métricas de funding"""
     
