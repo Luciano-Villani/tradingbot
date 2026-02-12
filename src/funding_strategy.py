@@ -19,44 +19,39 @@ class FundingSignal:
 
 class FundingArbitrageStrategy:
     def __init__(self, config: Dict):
-        # --- CORRECCIÓN DE CARGA DE SÍMBOLOS ---
-        self.symbols = config.get('symbols')
-        if not self.symbols:
-            logger.error("❌ No se encontraron símbolos en settings.json")
-            self.symbols = []
+        # ... (carga de símbolos igual) ...
+        self.symbols = config.get('symbols', [])
+
+        # --- CORRECCIÓN DE NOMBRES ---
+        # Buscamos los nombres exactos que pusiste en settings.json
+        self.extreme_threshold = config.get('min_funding_rate_threshold', 0.015) / 100 # Convertir 0.015 a 0.00015
+        self.min_threshold = config.get('buffer_over_fees', 0.005) / 100
         
-        # Umbrales desde el JSON
-        self.extreme_threshold = config.get('min_funding_rate', 0.0001)
-        self.min_threshold = config.get('exit_funding_rate', 0.00005)
         self.max_position_size = config.get('max_position_size_usd', 100)
         self.leverage = config.get('leverage', 5)
         self.max_positions = config.get('max_positions', 3)
         
-        # --- NUEVO: CONFIGURACIÓN DE FUNDING ---
-        self.funding_hours = [0, 8, 16]  # Binance: 00:00, 08:00, 16:00 UTC
-        self.funding_interval_hours = 8
-        
-        # --- SINCRONIZACIÓN DE HISTORIAL ---
+        self.funding_hours = [0, 8, 16]
         self.history: Dict[str, List[float]] = {s: [] for s in self.symbols}
         self.max_history = 20
         self.positions: Dict[str, Dict] = {}
         
-        # --- NUEVO: BREAK-EVEN CALCULATOR ---
-        self.estimated_slippage_bps = 5  # 0.05% entrada + salida
-        self.taker_fee_bps = 4  # 0.04%
-        self.maker_fee_bps = 2  # 0.02%
+        # --- AJUSTE DE COSTOS REALISTAS ---
+        self.estimated_slippage_bps = 2  # Bajamos a 2 bps (0.02%)
+        self.taker_fee_bps = 4           # 0.04% (Binance Standard)
         self.break_even_rate = self._calculate_break_even_rate()
         
         logger.info(f"✅ Estrategia: {len(self.symbols)} pares | Break-even: {self.break_even_rate:.4%}")
 
     def _calculate_break_even_rate(self) -> float:
-        """Calcula el funding rate mínimo para ser rentable"""
-        # Costos: slippage (ida y vuelta) + comisiones (entrada + salida)
+        """Calcula el funding rate mínimo considerando una estancia de al menos 2 ciclos"""
+        # Costo total ida y vuelta: (2 de slippage + 8 de comisiones) = 10 bps
         total_cost_bps = self.estimated_slippage_bps + (self.taker_fee_bps * 2)
-        # Convertir a rate por ciclo de 8 horas
-        # Asumimos 1 ciclo mínimo, si queremos más ciclos, dividimos
-        return total_cost_bps / 10000
-
+        
+        # Dividimos por 2 ciclos para ser más agresivos. 
+        # Si la tasa es > 0.05% (5 bps), en dos pagos cubrimos los gastos.
+        return (total_cost_bps / 2) / 10000
+    
     def _next_funding_time(self, now: datetime = None) -> datetime:
         """Calcula el próximo funding en UTC"""
         if now is None:

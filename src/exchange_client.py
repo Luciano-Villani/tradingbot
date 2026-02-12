@@ -90,58 +90,45 @@ class BinanceClient:
             return False
     
     def fetch_balance(self) -> Optional[Dict]:
-        """Balance completo de futures"""
+        """Balance dinámico - Detecta todos los activos con saldo"""
         try:
             response = self.exchange.fetch2('account', 'fapiPrivateV2')
-            
             assets = response.get('assets', [])
-            balance = {
-                'USDT': {'free': 0, 'used': 0, 'total': 0},
-                'USDC': {'free': 0, 'used': 0, 'total': 0},
-                'BTC': {'free': 0, 'used': 0, 'total': 0},
-            }
             
+            balance = {}
+            new_cache = {}
+
             for asset in assets:
                 asset_name = asset.get('asset', '')
-                if asset_name in balance:
-                    available = float(asset.get('availableBalance', 0))
-                    wallet = float(asset.get('walletBalance', 0))
+                wallet = float(asset.get('walletBalance', 0))
+                available = float(asset.get('availableBalance', 0))
+                
+                # Solo procesamos activos con saldo mayor a 0
+                if wallet > 0:
                     balance[asset_name] = {
                         'free': available,
                         'used': wallet - available,
                         'total': wallet
                     }
+                    new_cache[asset_name] = available
             
-            # Actualizar cache
-            self._balance_cache = {
-                'USDT': balance['USDT']['free'],
-                'USDC': balance['USDC']['free'],
-                'BTC': balance['BTC']['free'],
-            }
-            
+            # Actualizamos el cache con TODO lo que se encontró (BTC, USDT, etc.)
+            self._balance_cache = new_cache
             return balance
                 
         except Exception as e:
             logger.error(f"❌ Error balance: {e}")
-            if self.paper_mode:
-                return {
-                    'USDT': {'free': self._balance_cache['USDT'], 'used': 0, 'total': self._balance_cache['USDT']},
-                    'USDC': {'free': self._balance_cache['USDC'], 'used': 0, 'total': self._balance_cache['USDC']},
-                    'BTC': {'free': self._balance_cache['BTC'], 'used': 0, 'total': self._balance_cache['BTC']},
-                }
-            return None
-    
+            # En caso de error, devolvemos el último cache conocido
+            return {k: {'free': v, 'total': v} for k, v in self._balance_cache.items()}
+
     def fetch_balance_simple(self) -> Dict:
-        """Versión simplificada para dashboard"""
+        """Versión simplificada para el Dashboard (envía el diccionario completo)"""
         balance = self.fetch_balance()
         if not balance:
             return self._balance_cache
         
-        return {
-            'USDT': balance.get('USDT', {}).get('free', 0),
-            'USDC': balance.get('USDC', {}).get('free', 0),
-            'BTC': balance.get('BTC', {}).get('free', 0),
-        }
+        # Devolvemos un dict simple: {'USDT': 5000, 'BTC': 0.01, ...}
+        return {asset: data['free'] for asset, data in balance.items()}
     
     def fetch_funding_rate(self, symbol: str = 'BTC/USDT') -> Optional[Dict]:
         """Funding rate"""
