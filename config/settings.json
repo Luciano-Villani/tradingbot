@@ -4,17 +4,18 @@
       "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", 
       "XRP/USDT", "DOGE/USDT", "ADA/USDT", "AVAX/USDT"
     ],
-    "min_funding_rate": 0.0001,
-    "exit_funding_rate": 0.00005,
-    "max_position_size_usd": 100,
-    "leverage": 5,
-    "check_interval_seconds": 60,
-    "max_positions": 3
+    "min_funding_rate_threshold": 0.015,
+    "buffer_over_fees": 0.005,
+    "check_interval_seconds": 30,
+    "max_positions": 3,
+    "leverage": 5
+    
   },
   "risk": {
     "max_daily_loss_usd": 50,
     "max_positions": 3,
     "max_errors_per_day": 10,
+    "max_position_size_usd": 1000,
     "auto_stop_on_errors": true
   },
   "logging": {
