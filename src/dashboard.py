@@ -89,8 +89,13 @@ class Dashboard:
 
         print("╠" + "═" * 78 + "╣")
         
-        # Balances rápidos
-        balance_str = f"USDT: {self.balance.get('USDT', 0):>8.2f} | USDC: {self.balance.get('USDC', 0):>8.2f}"
+       # --- SECCIÓN DE BALANCE ACTUALIZADA ---
+        u_bal = self.balance.get('USDT', 0)
+        c_bal = self.balance.get('USDC', 0)
+        b_bal = self.balance.get('BTC', 0)
+        
+        # Formateamos con precisión: 2 decimales para stables, 4 para BTC
+        balance_str = f"USDT: {u_bal:>8.2f} | USDC: {c_bal:>8.2f} | BTC: {b_bal:>8.4f}"
         print(f"║ BALANCE TOTAL: {balance_str:<60} ║")
         
         print("╠" + "═" * 78 + "╣")
@@ -99,5 +104,4 @@ class Dashboard:
             print(f"║ {msg:<76} ║")
         print("╚" + "═" * 78 + "╝")
         print("\nPresiona Ctrl+C para detener el bot")
-        
-                
+
