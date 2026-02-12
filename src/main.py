@@ -235,15 +235,16 @@ class ArgenFundingBot:
         self.dashboard.render()
         print("\n[!] Bot detenido correctamente.")
 
-def main():
+async def main():
     bot = ArgenFundingBot()
-    loop = asyncio.get_event_loop()
     try:
-        if loop.run_until_complete(bot.initialize()):
-            loop.run_until_complete(bot.run())
+        initialized = await bot.initialize()
+        if initialized:
+            await bot.run()
     except Exception as e:
         logger.exception(f"Error fatal: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
+    
